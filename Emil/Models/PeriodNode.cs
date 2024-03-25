@@ -9,9 +9,22 @@ namespace Emil.Models
 {
     public class PeriodNode : TreeNode
     {
-        public PeriodNode(string header)
+        public PeriodNode(string header, string[] indicators)
         {
             this.Text = header;
+
+            //Наполнение индикаторами
+            foreach (string indicator in indicators) 
+            {
+                //Добавляем только те индикаторы, которые начинаются с i
+                if (indicator[0] == 'i')
+                {
+                    this.Nodes.Add(new IndicatorNode(indicator));
+                }
+                
+            }
+
+           
         }
     }
 }

@@ -1,10 +1,19 @@
-﻿using IronXL;
+﻿using Emil.Models;
+using IronXL;
+using NPOI.HSSF.Record.Chart;
+using NPOI.SS.Formula.Functions;
+using NPOI.Util;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Data.Common;
+using System.Data.Odbc;
+using System.Data.OleDb;
 using System.Drawing;
+using System.IO;
 using System.Linq;
+using System.Reflection.Emit;
 using System.Text;
 using System.Windows.Forms;
 using ZedGraph;
@@ -120,13 +129,16 @@ namespace Emil
 
             InitZedgraphControl();
             InitPane();
-            OpenExcelFile("Book.xlsx");
+
+            OpenMSAccesDb();
+
+            //OpenExcelFile("Book.xlsx");
 
             tree.DoubleClick += (s, e) =>
             {
-                if(tree.SelectedNode is Models.TrendNode)
+                if(tree.SelectedNode is Models.IndicatorNode)
                 {
-                    Models.TrendNode trendNode = (Models.TrendNode)tree.SelectedNode;
+                    Models.IndicatorNode trendNode = (Models.IndicatorNode)tree.SelectedNode;
                     DrawTrend(trendNode);
                 }
             };
@@ -318,102 +330,87 @@ namespace Emil
         }
 
         /// <summary>
-        /// Загрузка Excel
+        /// Метод для получения наименований колонок в таблице
         /// </summary>
-        void LoadBook(string file)
+        /// <param name="tableName"></param>
+        /// <returns></returns>
+        public List<string> GetColumnNamesFromMSAccess(OleDbConnection dbConnection, string tableName)
         {
-            //Приминение ключа
-            var key = "IRONSTUDIO-1367548932-609745-4E91C77-3BEEDAB01-21DDB5-UExE0BBC0859E6A119-2056197345";
-            IronXL.License.LicenseKey = key;
+            using (dbConnection)
+            {
+                
+                var schemaTable = dbConnection.GetOleDbSchemaTable(OleDbSchemaGuid.Columns, new Object[] { null, null, tableName });
 
-            Book = IronXL.WorkBook.Load(file);
-
-            Sheet = Book.WorkSheets[1];
+                if (schemaTable == null)
+                {
+                    return null;
+                }
+                   
+                var columnOrdinalForName = schemaTable.Columns["COLUMN_NAME"].Ordinal;
+                return (from DataRow r in schemaTable.Rows select r.ItemArray[columnOrdinalForName].ToString()).ToList();
+            }
         }
 
         /// <summary>
-        /// Получение или создание нового узла PeriodNode
+        /// Метод для получения записей из базы данных
         /// </summary>
-        /// <param name="node"></param>
-        /// <param name="title"></param>
-        /// <param name="newNode"></param>
         /// <returns></returns>
-        TreeNode GetOrCreatePeriodNode(TreeNode node, string title, out bool newNode)
+        string[] GetTeamsNames(OleDbConnection dbConnection)
         {
-            newNode = false;
+            List<string> teamList = new List<string>();
+         
+            // текст запроса
+            string query = "SELECT TeamName FROM KHL_23_24;";
 
-            foreach (TreeNode n in node.Nodes)
+            // создаем объект OleDbCommand для выполнения запроса к БД MS Access
+            OleDbCommand command = new OleDbCommand(query, dbConnection);
+
+            // получаем объект OleDbDataReader для чтения табличного результата запроса SELECT
+            OleDbDataReader reader = command.ExecuteReader();
+
+            // в цикле построчно читаем ответ от БД
+            while (reader.Read())
             {
-                if(n.Text == title)
+                try
                 {
-                    return n;
+                    //Получаем имя команды
+                    var teamName = reader.GetString(0);
+
+                    var index = teamList.IndexOf(teamName);
+
+                    //Если имя команды уже добавлено, идем дальше
+                    if (index < 0)
+                    {
+                        teamList.Add(teamName);
+                    }
+                }
+                catch 
+                {
+                
                 }
             }
 
-            newNode = true;
+            return teamList.ToArray();
 
-            var treenode = new Models.PeriodNode(title);
-            node.Nodes.Add(treenode);
-            return treenode;
         }
 
-        /// <summary>
-        /// Открытие файла Excel
-        /// </summary>
-        /// <param name="file"></param>
-        void OpenExcelFile(string file)
+        void OpenMSAccesDb()
         {
-            LoadBook(file);
 
-            //Наполнение дерева
-            TreeNode rootNode = new TreeNode("Трактор");
-            tree.Nodes.Add(rootNode);
+            OleDbConnection DbConnection = new OleDbConnection("Provider=Microsoft.ACE.OLEDB.12.0;Data Source=DataBase.accdb;Persist Security Info=False;");
+            DbConnection.Open();
 
-            //Постройка уровня дат матчей
-            var rows = Sheet.Rows.Count;
-            var columns = Sheet.Columns.Count;
+            var columnsNames = GetColumnNamesFromMSAccess(DbConnection, "KHL_23_24").ToArray();
 
-            //Наполнение получение периодов
-            for (int i = 4; i < rows; i++)
+            DbConnection = new OleDbConnection("Provider=Microsoft.ACE.OLEDB.12.0;Data Source=DataBase.accdb;Persist Security Info=False;");
+            DbConnection.Open();
+
+            var teamNames = GetTeamsNames(DbConnection);
+
+            //Создаем коллекцию узлов команд
+            foreach(var teamName in teamNames)
             {
-                var cellRaw = Sheet[$"F{i}"].Value.ToString();
-
-                if (string.IsNullOrEmpty(cellRaw) == true)
-                {
-                    continue;
-                }
-
-                bool newNode = false;
-                var periodNode = GetOrCreatePeriodNode(rootNode, cellRaw, out newNode);
-                var periodId = cellRaw;
-
-                //Получение сигналов
-                for (byte k = 0; k < columns; k++)
-                {
-                    //G3
-                    var columnIndex = AddSymbol("G", k);
-
-                    cellRaw = Sheet[$"{columnIndex}3"].Value.ToString();
-
-                    if (string.IsNullOrEmpty(cellRaw) == true)
-                    {
-                        continue;
-                    }
-
-                    if(newNode == false)
-                    {
-                        continue;
-                    }
-
-                    var trendNode = new Models.TrendNode(cellRaw)
-                    {
-                        ColumnId = columnIndex,
-                        RowId = $"{i}",
-                        workSheet = this.Sheet,
-                        PeriodId = periodId
-                    };
-                    periodNode.Nodes.Add(trendNode);
-                }
+                tree.Nodes.Add(new TeameNode(teamName, columnsNames));
             }
         }
 
@@ -485,7 +482,22 @@ namespace Emil
             return false;
         }
 
-        void DrawTrend(Models.TrendNode trendNode)
+
+        double GetAverange(PointPairList pointList)
+        {
+            double averange = 0;
+
+            for(int i = 0; i < pointList.Count; i++)
+            {
+                averange += pointList[i].Y;
+            }
+
+            averange = averange / pointList.Count;
+
+            return averange;
+        }
+
+        void DrawTrend(Models.IndicatorNode trendNode)
         {
             if(BrushesList.Count == 0)
             {
@@ -497,6 +509,7 @@ namespace Emil
 
             //Проверка на то, что тренд уже добавлен
             var trendExist = TrendIsExist(trenttitle);
+            
             if (trendExist) 
             { 
                 return; 
@@ -504,6 +517,9 @@ namespace Emil
 
             //Чтение данных из Excel
             var list = trendNode.Read();
+
+            var averange = GetAverange(list);
+            averange = Math.Round(averange, 1);
 
 
             var color = BrushesList[0];
@@ -515,11 +531,18 @@ namespace Emil
             // Создание кривой с использованием дат ничем не отличается от создания других кривых
             LineItem myCurve = pane.AddCurve("", list, color, SymbolType.None);
 
+            var subitems = trendNode.GetTitle().Split('/');
+
             var lv = new ListViewItem()
             {
-                Text = trendNode.GetTitle(),
+                Text = subitems[0],  
                 ForeColor = color
             };
+
+            lv.SubItems.Add(subitems[1]);
+            lv.SubItems.Add(subitems[2]);
+            lv.SubItems.Add(averange.ToString());
+
 
             listView.Items.Add(lv);
 
